@@ -5,7 +5,9 @@
 <script id="profilerCornerEntryTemplate" type="text/x-jquery-tmpl">
     <div class="entry">
         {{if temporary_redirect}}&#8623;{{/if}}
-        ${profiler_results.total_time} <span class="ms">ms</span>
+        <span title="${url}">${profiler_results.total_time} <span class="ms">ms</span>
+                <span class="dupe">{{if appstats_results.likely_dupes}}!{{else}}&nbsp{{/if}}</span>
+        </span>
     </div>
 </script>
 

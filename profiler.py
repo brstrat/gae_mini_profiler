@@ -1,19 +1,19 @@
+import base64
 import datetime
-import time
 import logging
 import os
 import pickle
 import re
-import simplejson
 import StringIO
-from types import GeneratorType
+import threading
+import time
 import zlib
-
-from google.appengine.ext.webapp import template, RequestHandler
-from google.appengine.api import memcache
-
-import unformatter
 from pprint import pformat
+from types import GeneratorType
+
+from google.appengine.api import memcache
+from google.appengine.ext.webapp import template, RequestHandler
+
 import cleanup
 import cookies
 import unformatter
@@ -23,14 +23,30 @@ try:
 except ImportError:
     import simplejson as json
 
-from gae_mini_profiler.config import _config
-if os.environ["SERVER_SOFTWARE"].startswith("Devel"):
-    config = _config.ConfigDevelopment
-else:
-    config = _config.ConfigProduction
 
-# request_id is a per-request identifier accessed by a couple other pieces of gae_mini_profiler
-request_id = None
+import gae_mini_profiler.config
+if os.environ["SERVER_SOFTWARE"].startswith("Devel"):
+    config = gae_mini_profiler.config.ProfilerConfigDevelopment
+else:
+    config = gae_mini_profiler.config.ProfilerConfigProduction
+class Borg:
+    """Something like a Singelton the Python way"""
+    __shared_state = {}
+    def __init__(self):
+        self.__dict__ = self.__shared_state
+
+    def get_id(self):
+        """Get the ID of the currently served request."""
+        # This allows us to have different request IDs per thread even within a single process
+        # Works also in single-threaded Applications.
+        if 'thread_local_storage' not in self.__shared_state:
+            self.thread_local_storage = threading.local()
+        if 'request_id' not in self.thread_local_storage.__dict__:
+            # Set a random ID for this request so we can look up stats later
+            self.thread_local_storage.request_id = base64.urlsafe_b64encode(os.urandom(5))
+        return self.thread_local_storage.request_id
+requeststore = Borg()
+
 
 class SharedStatsHandler(RequestHandler):
 
@@ -80,7 +96,7 @@ class RequestStatsHandler(RequestHandler):
                     request_stats.disabled = True
                     request_stats.store()
 
-        self.response.out.write(simplejson.dumps(list_request_stats))
+        self.response.out.write(json.dumps(list_request_stats))
 
 class RequestStats(object):
 
@@ -96,8 +112,8 @@ class RequestStats(object):
             self.url += "?%s" % environ.get("QUERY_STRING")
 
         self.url_short = self.url
-        if len(self.url_short) > 26:
-            self.url_short = self.url_short[:26] + "..."
+        if len(self.url_short) > 70:
+            self.url_short = self.url_short[:70] + "..."
 
         self.simple_timing = middleware.simple_timing
         self.s_dt = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -113,7 +129,6 @@ class RequestStats(object):
         # Store compressed results so we stay under the memcache 1MB limit
         pickled = pickle.dumps(self)
         compressed_pickled = zlib.compress(pickled)
-
         return memcache.set(RequestStats.memcache_key(self.request_id), compressed_pickled)
 
     @staticmethod
@@ -241,7 +256,7 @@ class RequestStats(object):
                 service_totals_dict[service_prefix]["total_time"] += trace.duration_milliseconds()
 
                 stack_frames_desc = []
-                for frame in trace.call_stack_:
+                for frame in trace.call_stack_list():
                     stack_frames_desc.append("%s:%s %s" %
                             (RequestStats.short_rpc_file_fmt(frame.class_or_file_name()),
                                 frame.line_number(),
@@ -306,7 +321,6 @@ class RequestStats(object):
 class ProfilerWSGIMiddleware(object):
 
     def __init__(self, app):
-        template.register_template_library('gae_mini_profiler.templatetags')
         self.app = app
         self.app_clean = app
         self.prof = None
@@ -320,9 +334,6 @@ class ProfilerWSGIMiddleware(object):
 
     def __call__(self, environ, start_response):
 
-        global request_id
-        request_id = None
-
         # Start w/ a non-profiled app at the beginning of each request
         self.app = self.app_clean
         self.prof = None
@@ -332,10 +343,6 @@ class ProfilerWSGIMiddleware(object):
 
         # Never profile calls to the profiler itself to avoid endless recursion.
         if config.should_profile(environ) and not environ.get("PATH_INFO", "").startswith("/gae_mini_profiler/"):
-
-            # Set a random ID for this request so we can look up stats later
-            import base64
-            request_id = base64.urlsafe_b64encode(os.urandom(5))
 
             # Send request id in headers so jQuery ajax calls can pick
             # up profiles.
@@ -348,8 +355,9 @@ class ProfilerWSGIMiddleware(object):
                     self.temporary_redirect = True
 
                 # Append headers used when displaying profiler results from ajax requests
-                headers.append(("X-MiniProfiler-Id", request_id))
+                headers.append(("X-MiniProfiler-Id", requeststore.get_id()))
                 headers.append(("X-MiniProfiler-QS", environ.get("QUERY_STRING")))
+                headers.append(('Set-Cookie', 'MiniProfilerId=%s; Max-Age=15' % requeststore.get_id()))
 
                 return start_response(status, headers, exc_info)
 
@@ -378,17 +386,15 @@ class ProfilerWSGIMiddleware(object):
                 # Configure AppStats output, keeping a high level of request
                 # content so we can detect dupe RPCs more accurately
                 from google.appengine.ext.appstats import recording
-                recording.config.MAX_REPR = 750
+                recording.config.MAX_REPR = 1500
 
                 # Turn on AppStats monitoring for this request
                 old_app = self.app
                 def wrapped_appstats_app(environ, start_response):
                     # Use this wrapper to grab the app stats recorder for RequestStats.save()
 
-                    if hasattr(recording.recorder, "get_for_current_request"):
-                        self.recorder = recording.recorder.get_for_current_request()
-                    else:
-                        self.recorder = recording.recorder
+                    if recording.recorder_proxy.has_recorder_for_current_request():
+                        self.recorder = recording.recorder_proxy.get_for_current_request()
 
                     return old_app(environ, start_response)
                 self.app = recording.appstats_wsgi_middleware(wrapped_appstats_app)
@@ -399,8 +405,6 @@ class ProfilerWSGIMiddleware(object):
 
                 # Get profiled wsgi result
                 result = self.prof.runcall(lambda *args, **kwargs: self.app(environ, profiled_start_response), None, None)
-
-                self.recorder = recording.recorder
 
                 # If we're dealing w/ a generator, profile all of the .next calls as well
                 if type(result) == GeneratorType:
@@ -421,12 +425,11 @@ class ProfilerWSGIMiddleware(object):
                 self.handler = None
 
             # Store stats for later access
-            RequestStats(request_id, environ, self).store()
+            RequestStats(requeststore.get_id(), environ, self).store()
 
             # Just in case we're using up memory in the recorder and profiler
             self.recorder = None
             self.prof = None
-            request_id = None
 
         else:
             result = self.app(environ, start_response)
@@ -480,10 +483,10 @@ class ProfilerWSGIMiddleware(object):
                 reg = re.compile("mp-r-id=([^&]+)")
 
                 # Keep any chain of redirects around
-                request_id_chain = request_id
+                request_id_chain = requeststore.get_id()
                 match = reg.search(environ.get("QUERY_STRING"))
                 if match:
-                    request_id_chain = ",".join([match.groups()[0], request_id])
+                    request_id_chain = ",".join([match.groups()[0], requeststore.get_id()])
 
                 # Remove any pre-existing miniprofiler redirect id
                 location = header[1]

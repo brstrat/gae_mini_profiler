@@ -3,11 +3,16 @@
     padding: 4px;
     cursor: pointer;
     text-align: right;
+    z-index: 10001;
 }
 
 .g-m-p-corner .ms,
 .g-m-p .ms {
     color: #777;
+}
+
+.g-m-p-corner .dupe {
+    color: #F00;
 }
 
 .g-m-p-corner .entry.ajax {
@@ -41,7 +46,7 @@
 }
 
 .g-m-p, .g-m-p-corner {
-    position: absolute;
+    position: fixed;
     left: 9px;
     top: 0px;
 
@@ -90,7 +95,7 @@
 }
 
 .g-m-p .url {
-    font-size: 125%;
+    font-size: 100%;
 }
 
 .g-m-p .redirect {

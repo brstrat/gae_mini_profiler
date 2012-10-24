@@ -131,7 +131,7 @@ var GaeMiniProfiler = {
         var initLevel = 10;
 
         if ($('#slider .control').slider) {
-            initLevel = 30;
+            initLevel = 10;
             $('#slider .control').slider({
                 value: initLevel,
                 min: 10,
@@ -149,10 +149,10 @@ var GaeMiniProfiler = {
 
     toggleSection: function(elLink, selector) {
 
-        var fWasVisible = $(selector).is(":visible");
+        var fWasVisible = $(".g-m-p " + selector).is(":visible");
 
-        $(".expand").removeClass("expanded");
-        $(".details:visible").slideUp(50)
+        $(".g-m-p .expand").removeClass("expanded");
+        $(".g-m-p .details:visible").slideUp(50);
 
         if (!fWasVisible) {
             $(elLink).parents(".expand").addClass("expanded");

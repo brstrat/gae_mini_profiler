@@ -1,13 +1,10 @@
 from google.appengine.api import lib_config
-from google.appengine.api import users
-
+from appengine_config import appstats_should_record
 
 # If using the default should_profile implementation, the profiler
 # will only be enabled for requests made by the following GAE users.
 enabled_profiler_emails = [
-    "test@example.com",
-    "test1@example.com",
-]
+                           ]
 
 
 # Customize should_profile to return true whenever a request should be profiled.
@@ -15,15 +12,12 @@ enabled_profiler_emails = [
 class ProfilerConfigProduction:
     @staticmethod
     def should_profile(environ):
-        user = users.get_current_user()
-        return user and user.email() in _config.ENABLED_PROFILER_EMAILS
-
+        return appstats_should_record(environ)
 
 class ProfilerConfigDevelopment:
     @staticmethod
     def should_profile(environ):
-        return users.is_current_user_admin()
-
+        return appstats_should_record(environ)
 
 # see http://code.google.com/appengine/docs/python/tools/appengineconfig.html
 _config = lib_config.register('gae_mini_profiler',
