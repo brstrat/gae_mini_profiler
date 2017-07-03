@@ -1,26 +1,42 @@
+import os
+
 from google.appengine.api import lib_config
-from appengine_config import appstats_should_record
 
-# If using the default should_profile implementation, the profiler
-# will only be enabled for requests made by the following GAE users.
-enabled_profiler_emails = [
-                           ]
+import util
 
+# These should_profile functions return true whenever a request should be
+# profiled.
+#
+# You can override these functions in appengine_config.py. See example below
+# and https://developers.google.com/appengine/docs/python/tools/appengineconfig
+#
+# These functions will be run once per request, so make sure they are fast.
+#
+# Example:
+#   ...in appengine_config.py:
+#       def gae_mini_profiler_should_profile_production():
+#           from google.appengine.api import users
+#           return users.is_current_user_admin()
 
-# Customize should_profile to return true whenever a request should be profiled.
-# This function will be run once per request, so make sure its contents are fast.
-class ProfilerConfigProduction:
-    @staticmethod
-    def should_profile(environ):
-        return appstats_should_record(environ)
+def _should_profile_production_default(environ):
+    """Default to disabling in production if this function isn't overridden.
 
-class ProfilerConfigDevelopment:
-    @staticmethod
-    def should_profile(environ):
-        return appstats_should_record(environ)
+    Can be overridden in appengine_config.py"""
+    return False
 
-# see http://code.google.com/appengine/docs/python/tools/appengineconfig.html
-_config = lib_config.register('gae_mini_profiler',
-                              {'ENABLED_PROFILER_EMAILS': enabled_profiler_emails,
-                               'ConfigProduction': ProfilerConfigProduction,
-                               'ConfigDevelopment': ProfilerConfigDevelopment})
+def _should_profile_development_default(environ):
+    """Default to enabling in development if this function isn't overridden.
+
+    Can be overridden in appengine_config.py"""
+    return True
+
+_config = lib_config.register("gae_mini_profiler", {
+    "should_profile_production": _should_profile_production_default,
+    "should_profile_development": _should_profile_development_default})
+
+def should_profile(environ):
+    """Returns true if the current request should be profiles."""
+    if util.dev_server:
+        return _config.should_profile_development(environ)
+    else:
+        return _config.should_profile_production(environ)
